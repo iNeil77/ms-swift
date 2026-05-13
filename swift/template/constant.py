@@ -19,6 +19,7 @@ class LLMTemplateType:
     qwen3_coder = 'qwen3_coder'
     qwen3_emb = 'qwen3_emb'
     qwen3_reranker = 'qwen3_reranker'
+    octolong = 'octolong'
     qwq_preview = 'qwq_preview'
     qwq = 'qwq'
     yufeng_xguard = 'yufeng_xguard'
