@@ -330,9 +330,22 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # (e.g. by mounting a different branch of the fork over /opt/ms-swift).
 # ---------------------------------------------------------------------------
 ARG SWIFT_REPO=https://github.com/iNeil77/ms-swift.git
-ARG SWIFT_BRANCH=v4.2.0-multiturn-sft
+# SWIFT_REF accepts a branch name, tag, or full commit SHA. The clone uses a
+# detect-and-fetch pattern: try a shallow branch/tag clone first, fall back to
+# fetching a specific revision (works for arbitrary commit SHAs).
+ARG SWIFT_REF=v4.2.0-multiturn-sft
 RUN --mount=type=cache,target=/root/.cache/pip \
-    git clone --depth 1 --branch ${SWIFT_BRANCH} ${SWIFT_REPO} /opt/ms-swift && \
+    if git clone --depth 1 --branch ${SWIFT_REF} ${SWIFT_REPO} /opt/ms-swift 2>/dev/null; then \
+        echo "Cloned ${SWIFT_REF} as branch/tag"; \
+    else \
+        echo "Falling back to fetch-by-revision for ${SWIFT_REF}"; \
+        rm -rf /opt/ms-swift && \
+        git init /opt/ms-swift && \
+        cd /opt/ms-swift && \
+        git remote add origin ${SWIFT_REPO} && \
+        git fetch --depth 1 origin ${SWIFT_REF} && \
+        git checkout FETCH_HEAD; \
+    fi && \
     cd /opt/ms-swift && \
     python -m pip install -e . && \
     python -c "from swift.template.register import TEMPLATE_MAPPING; \
