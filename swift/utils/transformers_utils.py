@@ -325,7 +325,7 @@ def get_modules_to_not_convert(model):
     suffix_list = []
     if model.model_info.is_moe_model:
         suffix_list += ['mlp.gate', 'mlp.shared_expert_gate']
-    if model_type in {'qwen3_next', 'qwen3_5', 'qwen3_5_moe'}:
+    if model_type in {'qwen3_next', 'qwen3_5', 'qwen3_5_moe', 'qwen3_5_text', 'qwen3_5_moe_text'}:
         suffix_list += ['in_proj_a', 'in_proj_b']
     if model_arch is not None:
         for key in ['vision_tower', 'aligner']:
