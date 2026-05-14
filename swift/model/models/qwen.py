@@ -1486,6 +1486,76 @@ register_model(
         tags=['vision', 'video']))
 
 
+# ---------------------------------------------------------------------------
+# Text-only Qwen3.5 / Qwen3.5-MoE register.
+#
+# The default `qwen3_5` / `qwen3_5_moe` model_types above route through
+# Qwen3VLLoader -> Qwen3_5ForConditionalGeneration, which unconditionally
+# constructs the vision tower from `config.vision_config`. Checkpoints that
+# carry only the text config (Qwen3_5TextConfig / Qwen3_5MoeTextConfig) crash
+# in that path with "AttributeError: 'Qwen3_5TextConfig' object has no
+# attribute 'vision_config'".
+#
+# These additional model_types use the text-only HF classes
+# (Qwen3_5ForCausalLM / Qwen3_5MoeForCausalLM) and skip the Qwen2-VL routing.
+# The hybrid linear-attention sequence-parallel monkey patch is still applied
+# so --sequence_parallel_size > 1 produces correct kernels.
+# ---------------------------------------------------------------------------
+
+
+class Qwen3_5TextLoader(QwenLoader):
+
+    def get_model(self, model_dir: str, config, processor, model_kwargs) -> PreTrainedModel:
+        from transformers import Qwen3_5ForCausalLM
+        self.auto_model_cls = self.auto_model_cls or Qwen3_5ForCausalLM
+        _patch_qwen3_5_linear_attention_sequence_parallel()
+        return super().get_model(model_dir, config, processor, model_kwargs)
+
+
+class Qwen3_5MoeTextLoader(QwenLoader):
+
+    def get_model(self, model_dir: str, config, processor, model_kwargs) -> PreTrainedModel:
+        from transformers import Qwen3_5MoeForCausalLM
+        self.auto_model_cls = self.auto_model_cls or Qwen3_5MoeForCausalLM
+        _patch_qwen3_5_linear_attention_sequence_parallel()
+        return super().get_model(model_dir, config, processor, model_kwargs)
+
+
+register_model(
+    ModelMeta(
+        LLMModelType.qwen3_5_text,
+        [
+            ModelGroup(
+                [
+                    Model('Qwen/Qwen3.5-0.8B-Base', 'Qwen/Qwen3.5-0.8B-Base'),
+                    Model('Qwen/Qwen3.5-2B-Base', 'Qwen/Qwen3.5-2B-Base'),
+                    Model('Qwen/Qwen3.5-4B-Base', 'Qwen/Qwen3.5-4B-Base'),
+                    Model('Qwen/Qwen3.5-9B-Base', 'Qwen/Qwen3.5-9B-Base'),
+                ],
+                TemplateType.qwen3_nothinking),
+        ],
+        Qwen3_5TextLoader,
+        architectures=['Qwen3_5ForCausalLM'],
+        requires=['transformers>=5.0.0.dev']))
+
+
+register_model(
+    ModelMeta(
+        LLMModelType.qwen3_5_moe_text,
+        [
+            ModelGroup(
+                [
+                    Model('Qwen/Qwen3.5-35B-A3B-Base', 'Qwen/Qwen3.5-35B-A3B-Base'),
+                    Model('Qwen/Qwen3.5-122B-A10B-Base', 'Qwen/Qwen3.5-122B-A10B-Base'),
+                    Model('Qwen/Qwen3.5-397B-A17B-Base', 'Qwen/Qwen3.5-397B-A17B-Base'),
+                ],
+                TemplateType.qwen3_nothinking),
+        ],
+        Qwen3_5MoeTextLoader,
+        architectures=['Qwen3_5MoeForCausalLM'],
+        requires=['transformers>=5.2.0']))
+
+
 class Qwen2_5OmniLoader(ModelLoader):
 
     def _check_qwen_omni_utils(self):

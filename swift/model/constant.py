@@ -10,6 +10,8 @@ class LLMModelType:
     qwen3 = 'qwen3'
     qwen3_moe = 'qwen3_moe'
     qwen3_next = 'qwen3_next'
+    qwen3_5_text = 'qwen3_5_text'
+    qwen3_5_moe_text = 'qwen3_5_moe_text'
     qwen3_emb = 'qwen3_emb'
     qwen3_reranker = 'qwen3_reranker'
 
