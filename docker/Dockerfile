@@ -261,11 +261,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         keye-vl-utils \
         minicpmo \
         openai-whisper \
-        qwen-asr \
         decord \
         av \
         moviepy \
-        audioread
+        audioread \
+        nagisa soynlp sox flask pytz && \
+    # qwen-asr pins transformers==4.57.6 and accelerate==1.12.0, which would
+    # downgrade our installed versions. Install with --no-deps; its other
+    # runtime deps (nagisa, soynlp, sox, flask, pytz) are pulled above without
+    # the strict pins, and gradio/librosa/soundfile/qwen-omni-utils are
+    # already present from earlier steps.
+    python -m pip install --no-deps qwen-asr
 
 # ---------------------------------------------------------------------------
 # 10. ms-swift fork at the multiturn-sft branch.
