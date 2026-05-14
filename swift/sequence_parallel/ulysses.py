@@ -226,25 +226,34 @@ class SequenceParallel:
                     dtype=input_embeds.dtype,
                     device=input_embeds.device)
                 cache_position = torch.arange(0, input_embeds.shape[1], device=input_embeds.device)
-                # Models like qwen3_5 pass `position_ids` into create_causal_mask, which makes HF
-                # build a (B, seq) `packed_sequence_mask` from position-id resets and then index it
-                # with q_idx/kv_idx running over the full unsharded length. The local-length mask
-                # then walks OOB. Inflate `position_ids` and `attention_mask` to match the full
-                # length we already inflated `input_embeds` to. Older models (e.g. qwen3) don't
-                # pass position_ids and skip this branch entirely, so behavior there is unchanged.
-                real_position_ids = self.real_position_ids
-                if real_position_ids is not None:
-                    full_position_ids = self.pad(
-                        real_position_ids, padding_value=-1, position_ids=real_position_ids)
-                    if attention_mask is not None:
-                        attention_mask = torch.ones_like(full_position_ids)
-                    if kwargs.get('position_ids') is not None:
-                        kwargs['position_ids'] = full_position_ids
                 return masking_utils.origin_create_causal_mask(config, input_embeds, attention_mask, cache_position,
                                                                *args, **kwargs)
 
             masking_utils.origin_create_causal_mask = masking_utils.create_causal_mask
             masking_utils.create_causal_mask = create_causal_mask
+
+            # Many HF modeling files (qwen3, qwen3_5, qwen3_5_moe, qwen3_next, qwen3_vl, qwen3_omni,
+            # glm4*, ...) `from ..masking_utils import create_causal_mask` at import time and call
+            # the symbol they captured -- so reassigning `masking_utils.create_causal_mask` above
+            # has no effect for them. Inside HF's body though, `_preprocess_mask_arguments` calls
+            # `find_packed_sequence_indices(position_ids)` via attribute lookup, so a monkey-patch
+            # there *does* take effect. With sequence parallel + packing, `position_ids` arriving
+            # at this call is the local (sharded) view, but HF later indexes the resulting
+            # `packed_sequence_mask` with q_idx/kv_idx running over the unsharded length set by
+            # our `sdpa_mask` shim above -- producing an out-of-bounds index. Replace the local
+            # `position_ids` with the full-length one we already constructed for `sdpa_mask`.
+            origin_find_packed_sequence_indices = masking_utils.find_packed_sequence_indices
+
+            def find_packed_sequence_indices(position_ids: torch.Tensor):
+                if self.world_size == 1:
+                    return origin_find_packed_sequence_indices(position_ids)
+                real_position_ids = self.real_position_ids
+                if real_position_ids is not None:
+                    position_ids = self.pad(
+                        real_position_ids, padding_value=-1, position_ids=real_position_ids)
+                return origin_find_packed_sequence_indices(position_ids)
+
+            masking_utils.find_packed_sequence_indices = find_packed_sequence_indices
         except ImportError:
             pass
 
