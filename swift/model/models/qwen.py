@@ -1503,13 +1503,40 @@ register_model(
 # ---------------------------------------------------------------------------
 
 
+def _strip_vision_no_split(model, *vision_class_names: str) -> None:
+    """Drop vision-only entries from a text-only model's ``_no_split_modules``.
+
+    Transformers' Qwen3.5 / Qwen3.5-MoE define ``_no_split_modules`` as a
+    class attribute on the *base* PreTrainedModel and reuse it on both the
+    text-only ``*ForCausalLM`` and the multimodal ``*ForConditionalGeneration``
+    classes. Accelerate's FSDP2 ``set_auto_wrap_policy`` then iterates that
+    list and raises::
+
+        ValueError: Could not find the transformer layer class
+                    Qwen3_5VisionBlock in the model.
+
+    on text-only checkpoints (the vision block class is never instantiated).
+    Replacing the list with an instance attribute that excludes the vision
+    classes silences the false positive without affecting any other code path
+    (FSDP-wrap, gradient-checkpointing offload, etc.).
+    """
+    cls_list = list(getattr(model, '_no_split_modules', None) or [])
+    pruned = [c for c in cls_list if c not in vision_class_names]
+    if pruned != cls_list:
+        # Set as instance attribute so we don't mutate the class for any
+        # future instantiation in the same process.
+        model._no_split_modules = pruned
+
+
 class Qwen3_5TextLoader(QwenLoader):
 
     def get_model(self, model_dir: str, config, processor, model_kwargs) -> PreTrainedModel:
         from transformers import Qwen3_5ForCausalLM
         self.auto_model_cls = self.auto_model_cls or Qwen3_5ForCausalLM
         _patch_qwen3_5_linear_attention_sequence_parallel()
-        return super().get_model(model_dir, config, processor, model_kwargs)
+        model = super().get_model(model_dir, config, processor, model_kwargs)
+        _strip_vision_no_split(model, 'Qwen3_5VisionBlock')
+        return model
 
 
 class Qwen3_5MoeTextLoader(QwenLoader):
@@ -1518,7 +1545,9 @@ class Qwen3_5MoeTextLoader(QwenLoader):
         from transformers import Qwen3_5MoeForCausalLM
         self.auto_model_cls = self.auto_model_cls or Qwen3_5MoeForCausalLM
         _patch_qwen3_5_linear_attention_sequence_parallel()
-        return super().get_model(model_dir, config, processor, model_kwargs)
+        model = super().get_model(model_dir, config, processor, model_kwargs)
+        _strip_vision_no_split(model, 'Qwen3_5MoeVisionBlock')
+        return model
 
 
 register_model(
