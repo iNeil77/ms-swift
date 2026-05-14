@@ -1,0 +1,163 @@
+# OctoLong ms-swift training image.
+#
+# Self-contained CUDA + ms-swift image for multi-node SFT with the
+# iNeil77/ms-swift fork (branch v4.2.0-multiturn-sft) which adds the
+# `octolong` template + agent_template that produce byte-equivalent output to
+# Qwen3's HF chat_template.
+#
+# Versions match modelscope's published "stable" 4.x stack:
+#   CUDA 12.8.1, Python 3.12, torch 2.9.1, vllm 0.15.1, lmdeploy 0.11.0,
+#   flash-attn 2.8.3, deepspeed <0.19, liger_kernel, transformers 4.56-5.8,
+#   trl <1.0, peft <0.20, datasets >=3.0,<4.8.5.
+#
+# Build:
+#   docker build -t ineil77/ms-swift:v4.2.0-multiturn-sft .
+#
+# Smoke test:
+#   docker run --gpus all --rm -it ineil77/ms-swift:v4.2.0-multiturn-sft \
+#       python -c "import swift; from swift.template.register import TEMPLATE_MAPPING; \
+#                  from swift.agent_template import agent_template_map; \
+#                  print('octolong template registered:', 'octolong' in TEMPLATE_MAPPING); \
+#                  print('octolong agent_template registered:', 'octolong' in agent_template_map)"
+
+FROM nvidia/cuda:13.1.2-cudnn-devel-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# ---------------------------------------------------------------------------
+# 1. System packages + Python 3.12 from deadsnakes ppa.
+# ---------------------------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates curl wget git git-lfs gnupg && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential ninja-build cmake pkg-config \
+        libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+        libffi-dev liblzma-dev libxml2-dev libxslt1-dev \
+        libsndfile1 libsox-dev ffmpeg \
+        libopenmpi-dev openmpi-bin \
+        libaio-dev libzstd-dev zstd \
+        iproute2 iputils-ping net-tools rsync openssh-client \
+        vim less htop tini \
+        python3.12 python3.12-dev python3.12-venv && \
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3.12 - && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 100 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 100 && \
+    git lfs install && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. PyTorch + audio/vision (CUDA 12.8 wheels).
+# ---------------------------------------------------------------------------
+RUN python -m pip install --upgrade pip setuptools wheel packaging && \
+    python -m pip install \
+        --index-url https://download.pytorch.org/whl/cu130 \
+        torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0
+
+# ---------------------------------------------------------------------------
+# 3. Build-time CUDA + arch variables for source builds (flash-attn).
+#    H100 = sm_90, H200 = sm_90, B100/200 = sm_100. Keep both for portability.
+# ---------------------------------------------------------------------------
+ENV CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH \
+    TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0 10.0 10.3+PTX" \
+    MAX_JOBS=160
+
+# ---------------------------------------------------------------------------
+# 4. Core ML dependency stack (versions aligned with modelscope swift4.1.x).
+# ---------------------------------------------------------------------------
+RUN python -m pip install \
+        "transformers>=4.56,<5.9" \
+        "datasets>=3.0,<4.8.5" \
+        "accelerate>=0.34" \
+        "peft>=0.11,<0.20" \
+        "trl>=0.15,<1.0" \
+        "safetensors>=0.4" \
+        "huggingface-hub>=0.24" \
+        "modelscope>=1.23" \
+        awscli pynvml py-cpuinfo deepspeed-kernels \
+        tiktoken sentencepiece einops rouge tqdm matplotlib \
+        "PyYAML>=5.4" json_repair addict attrdict binpacking dacite \
+        fastapi "gradio<6.0" "uvicorn[standard]" openai oss2 \
+        tensorboard wandb swanlab \
+        scipy scikit-learn pandas pillow soundfile librosa \
+        qwen_vl_utils qwen_omni_utils \
+        icecream py-spy nvitop pre-commit \
+        math_verify \
+        liger-kernel \
+        "ray[default]>=2.10"
+
+RUN DS_BUILD_OPS=1 \
+    DS_BUILD_CCL_COMM=0 \
+    DS_BUILD_SPARSE_ATTN=0 \
+    DS_BUILD_STOCHASTIC_TRANSFORMER=0 \
+    DS_BUILD_EVOFORMER_ATTN=0 pip install --no-cache-dir --no-build-isolation deepspeed==0.19.0 \
+        --config-settings "--global-option=build_ext" \
+        --config-settings "--global-option=-j128"
+
+# ---------------------------------------------------------------------------
+# 5. xformers (cu128 build matching torch 2.9.1).
+# ---------------------------------------------------------------------------
+RUN python -m pip install --no-build-isolation --no-deps \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        xformers==0.0.34
+
+# ---------------------------------------------------------------------------
+# 6. flash-attn 2.8.3.
+#    PyPI ships sdist only; we build it here. Build is ~5-15 min on a 16-vcpu
+#    machine. The wheel is then permanently cached in this image layer.
+# ---------------------------------------------------------------------------
+RUN python -m pip install "flash-attn==2.8.3" --no-build-isolation
+
+# ---------------------------------------------------------------------------
+# 7. vllm + lmdeploy (no-deps to keep our torch/transformers pins).
+#    vllm pulls flashinfer-python at runtime; install it here.
+# ---------------------------------------------------------------------------
+RUN python -m pip install --no-deps --no-build-isolation \
+        "vllm==0.20.2" \
+        "lmdeploy==0.13.0" \
+        "flashinfer-python==0.6.8.post1" \
+        "flashinfer-cubin==0.6.8.post1" && \
+    python -m pip install \
+        msgspec prometheus-client outlines fairscale partial-json-parser \
+        cloudpickle pyzmq
+
+# ---------------------------------------------------------------------------
+# 8. ms-swift fork at the multiturn-sft branch.
+# ---------------------------------------------------------------------------
+ARG SWIFT_REPO=https://github.com/iNeil77/ms-swift.git
+ARG SWIFT_BRANCH=v4.2.0-multiturn-sft
+RUN git clone --depth 1 --branch ${SWIFT_BRANCH} ${SWIFT_REPO} /opt/ms-swift && \
+    cd /opt/ms-swift && \
+    python -m pip install -e . && \
+    python -c "from swift.template.register import TEMPLATE_MAPPING; \
+               from swift.agent_template import agent_template_map; \
+               assert 'octolong' in TEMPLATE_MAPPING, 'octolong template not registered'; \
+               assert 'octolong' in agent_template_map, 'octolong agent_template not registered'; \
+               print('octolong template + agent_template registered OK')"
+
+# ---------------------------------------------------------------------------
+# 9. Sensible runtime defaults.
+# ---------------------------------------------------------------------------
+ENV TOKENIZERS_PARALLELISM=false \
+    NCCL_NVLS_ENABLE=0 \
+    NCCL_P2P_LEVEL=NVL \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    HF_HOME=/root/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub \
+    TRANSFORMERS_CACHE=/root/.cache/huggingface/hub \
+    PYTHONPATH=/opt/ms-swift
+
+WORKDIR /opt/ms-swift
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/bin/bash"]
