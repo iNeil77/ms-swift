@@ -18,13 +18,12 @@
 #
 #   cd /path/to/ms-swift
 #   docker buildx build --progress=plain \
-#       -t ineil77/ms-swift:v4.2.0-multiturn-sft \
-#       -t ineil77/ms-swift:latest \
+#       -t ineil77/ms-swift:v4.2.0-multiturn-sft-extras \
 #       --load \
 #       -f docker/Dockerfile docker/
 #
 # Smoke test:
-#   docker run --gpus all --rm -it ineil77/ms-swift:v4.2.0-multiturn-sft \
+#   docker run --gpus all --rm -it ineil77/ms-swift:v4.2.0-multiturn-sft-extras \
 #       python -c "import swift; from swift.template.register import TEMPLATE_MAPPING; \
 #                  from swift.agent_template import agent_template_map; \
 #                  print('octolong template registered:', 'octolong' in TEMPLATE_MAPPING); \
@@ -74,9 +73,11 @@ ENV CUDA_HOME=/usr/local/cuda \
     MAX_JOBS=160 \
     NVCC_THREADS=8 \
     CCACHE_DIR=/root/.ccache \
-    CCACHE_MAXSIZE=20G \
-    CC="ccache cc" \
-    CXX="ccache c++"
+    CCACHE_MAXSIZE=20G
+# ccache is wired via the /usr/lib/ccache/{cc,c++,gcc,g++} shim symlinks (first
+# entry on PATH). nvcc's -ccbin needs a single-binary path, so we deliberately
+# leave CC/CXX unset; the shims are picked up automatically when torch's
+# cpp_extension shells out to the host compiler.
 
 # ---------------------------------------------------------------------------
 # 1. System packages + Python 3.12 (deadsnakes ppa). Uses BuildKit apt
@@ -255,6 +256,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # emu3, omni-speech. Layer those in a per-model derived Dockerfile.
 # ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --ignore-installed blinker && \
     python -m pip install \
         keye-vl-utils \
         minicpmo \
