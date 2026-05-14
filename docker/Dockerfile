@@ -222,17 +222,68 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ---------------------------------------------------------------------------
 # 8. vllm + lmdeploy (no-deps to keep our torch/transformers pins).
-#    vllm uses flashinfer-python and flashinfer-cubin at runtime.
+#
+# We install vllm/lmdeploy with --no-deps to prevent their cu12-pinned NVIDIA
+# wheels and over-strict torch upper bounds from clashing with our cu130/torch-
+# 2.11.0 stack. We then explicitly install the runtime deps they actually
+# import at startup so `vllm serve` and lmdeploy's pipelines work out of the
+# box.
+#
+# Skipped on purpose:
+#   * lmdeploy's torch<=2.10 / torchvision<=0.25 / nvidia-*-cu12 pins
+#     (we are on cu130 / torch 2.11),
+#   * lmdeploy's peft<=0.14.0 pin (ms-swift requires peft>=0.11,<0.20).
+# These don't matter at runtime for the LLM inference paths we use; lmdeploy
+# probes them lazily.
 # ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/root/.cache/pip \
+    # Bump pins to satisfy vllm 0.20.2's strict version requirements where
+    # it doesn't conflict with our other constraints.
+    python -m pip install -U "setuptools>=77.0.3,<81" && \
+    python -m pip install --force-reinstall --no-deps "numba==0.65.0" && \
+    python -m pip install --force-reinstall --no-deps "tilelang==0.1.9" && \
+    # Install vllm/lmdeploy themselves without their dependency closures.
     python -m pip install --no-deps --no-build-isolation \
         "vllm==0.20.2" \
         "lmdeploy==0.13.0" \
         "flashinfer-python==0.6.8.post1" \
         "flashinfer-cubin==0.6.8.post1" && \
+    # vllm's runtime imports: structured-output / quantization / observability.
     python -m pip install \
-        msgspec prometheus-client outlines fairscale partial-json-parser \
-        cloudpickle pyzmq
+        "compressed-tensors==0.15.0.1" \
+        "lm-format-enforcer==0.11.3" \
+        "llguidance>=1.3.0,<1.4.0" \
+        "outlines_core==0.2.14" \
+        "diskcache==5.6.3" \
+        "lark==1.2.2" \
+        "xgrammar>=0.1.32,<1.0.0" \
+        "depyf==0.20.0" \
+        "apache-tvm-ffi==0.1.9" \
+        "fastsafetensors>=0.2.2" \
+        "mistral_common[image]>=1.11.0" \
+        "opencv-python-headless>=4.13.0" \
+        "gguf>=0.17.0" \
+        "openai-harmony>=0.0.3" \
+        "anthropic>=0.71.0" \
+        "model-hosting-container-standards>=0.1.13,<1.0.0" \
+        mcp \
+        "prometheus-fastapi-instrumentator>=7.0.0" \
+        "opentelemetry-sdk>=1.27.0" \
+        "opentelemetry-api>=1.27.0" \
+        "opentelemetry-exporter-otlp>=1.27.0" \
+        "opentelemetry-semantic-conventions-ai>=0.4.1" \
+        cachetools blake3 pybase64 cbor2 ijson setproctitle \
+        python-json-logger msgspec partial-json-parser \
+        outlines fairscale cloudpickle pyzmq && \
+    # Hopper/Blackwell-only kernels vllm dispatches to when available. These
+    # are heavy (~2 GB combined) but enable serving fp8 / fp4 paths.
+    python -m pip install \
+        "nvidia-cudnn-frontend>=1.13.0,<1.19.0" \
+        "nvidia-cutlass-dsl>=4.4.2" \
+        "quack-kernels>=0.3.3" && \
+    # lmdeploy runtime deps not already pulled in for vllm above.
+    python -m pip install \
+        fire mmengine-lite shortuuid
 
 # ---------------------------------------------------------------------------
 # 9. Multimodal preprocessor + media-codec stack.
