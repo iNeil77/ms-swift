@@ -226,6 +226,20 @@ class SequenceParallel:
                     dtype=input_embeds.dtype,
                     device=input_embeds.device)
                 cache_position = torch.arange(0, input_embeds.shape[1], device=input_embeds.device)
+                # Models like qwen3_5 pass `position_ids` into create_causal_mask, which makes HF
+                # build a (B, seq) `packed_sequence_mask` from position-id resets and then index it
+                # with q_idx/kv_idx running over the full unsharded length. The local-length mask
+                # then walks OOB. Inflate `position_ids` and `attention_mask` to match the full
+                # length we already inflated `input_embeds` to. Older models (e.g. qwen3) don't
+                # pass position_ids and skip this branch entirely, so behavior there is unchanged.
+                real_position_ids = self.real_position_ids
+                if real_position_ids is not None:
+                    full_position_ids = self.pad(
+                        real_position_ids, padding_value=-1, position_ids=real_position_ids)
+                    if attention_mask is not None:
+                        attention_mask = torch.ones_like(full_position_ids)
+                    if kwargs.get('position_ids') is not None:
+                        kwargs['position_ids'] = full_position_ids
                 return masking_utils.origin_create_causal_mask(config, input_embeds, attention_mask, cache_position,
                                                                *args, **kwargs)
 
